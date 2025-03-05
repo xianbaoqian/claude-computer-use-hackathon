@@ -3,9 +3,9 @@ import os
 import time
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QLabel, QLineEdit, QPushButton, QTextEdit, QProgressBar,
-                            QScrollArea, QSplitter, QFrame, QGridLayout)
+                            QScrollArea, QSplitter, QFrame, QGridLayout, QSlider, QDial, QTabWidget, QToolButton)
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QColor, QPen
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRect, QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer, QSize, QPointF, QPoint, QParallelAnimationGroup, QSequentialAnimationGroup
 import requests
 from gradio_client import Client, handle_file
 from PIL import Image, ImageDraw
@@ -18,12 +18,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 import tempfile
+from PyQt5.QtWidgets import (QGraphicsOpacityEffect, QGraphicsBlurEffect)
+import random
+from PyQt5.QtMultimedia import QSound
 
 # Screen dimensions constants
-SCREENSHOT_WIDTH = 1200
-SCREENSHOT_HEIGHT = 1200
-DISPLAY_WIDTH = 1200
-DISPLAY_HEIGHT = 1200
+SCREENSHOT_WIDTH = 600
+SCREENSHOT_HEIGHT = 600
+DISPLAY_WIDTH = 600
+DISPLAY_HEIGHT = 600
 
 class AnimatedLabel(QLabel):
     """A label that can flash with an animated color effect"""
@@ -102,10 +105,23 @@ class WebCaptureThread(QThread):
             os.close(fd)
             driver.save_screenshot(temp_path)
             
+            # Verify screenshot was saved
+            if os.path.exists(temp_path):
+                print(f"Screenshot saved to: {temp_path}")
+                print(f"File size: {os.path.getsize(temp_path)} bytes")
+            else:
+                print(f"ERROR: Screenshot file not found at {temp_path}")
+            
             # Crop to SCREENSHOT_WIDTH x SCREENSHOT_HEIGHT
-            img = Image.open(temp_path)
-            cropped_img = img.crop((0, 0, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT))
-            cropped_img.save(temp_path)
+            try:
+                img = Image.open(temp_path)
+                print(f"Original image size: {img.size[0]}x{img.size[1]}")
+                cropped_img = img.crop((0, 0, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT))
+                print(f"Cropped image size: {cropped_img.size[0]}x{cropped_img.size[1]}")
+                cropped_img.save(temp_path)
+                print(f"Cropped image saved back to: {temp_path}")
+            except Exception as e:
+                print(f"Error cropping image: {str(e)}")
             
             self.screenshot_path = temp_path
             self.progress_update.emit("Screenshot captured!", 100)
@@ -278,6 +294,708 @@ class ModelThread(QThread):
         return None
 
 
+class InteractiveImageViewer(QWidget):
+    """Advanced image viewer with zoom, pan and HUD overlay"""
+    element_clicked = pyqtSignal(QPointF)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create scroll area first - this will be our main container
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroll_area.setStyleSheet("""
+            QScrollArea { 
+                background: transparent; 
+                border: none; 
+            }
+            QScrollBar:horizontal {
+                height: 15px;
+                background: #1A2327;
+                border-radius: 7px;
+            }
+            QScrollBar:vertical {
+                width: 15px;
+                background: #1A2327;
+                border-radius: 7px;
+            }
+            QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
+                background: #00BCD4;
+                border-radius: 7px;
+            }
+            QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover {
+                background: #00E5FF;
+            }
+        """)
+        
+        # Image container widget
+        self.image_container = QWidget()
+        self.image_container.setStyleSheet("""
+            background-color: #0A1014;
+            border: 2px solid #FF5500;  /* Add a bright border to see the container */
+        """)
+        self.image_layout = QVBoxLayout(self.image_container)
+        self.image_layout.setContentsMargins(15, 15, 15, 15)  # Add some padding
+        self.image_layout.setAlignment(Qt.AlignCenter)
+        
+        # Image label with a smaller size constraint
+        self.image_label = QLabel("No image captured yet")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setMinimumSize(400, 300)
+        self.image_label.setStyleSheet("""
+            background-color: #111111; 
+            border-radius: 8px; 
+            border: 2px solid #00BCD4;
+            color: #B0BEC5;
+            font-size: 16px;
+        """)
+        self.image_layout.addWidget(self.image_label, 0, Qt.AlignCenter)
+        
+        # Set the image container as the scroll area widget
+        self.scroll_area.setWidget(self.image_container)
+        
+        # Main layout gets the scroll area
+        self.main_layout.addWidget(self.scroll_area)
+        
+        # HUD controls overlay
+        self.hud_container = QWidget(self)
+        self.hud_container.setGeometry(self.rect())
+        hud_layout = QVBoxLayout(self.hud_container)
+        hud_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Zoom controls container - at the top
+        self.zoom_controls = QWidget()
+        zoom_layout = QHBoxLayout(self.zoom_controls)
+        zoom_layout.setContentsMargins(10, 5, 10, 5)
+        
+        # Zoom label
+        zoom_label = QLabel("Zoom:")
+        zoom_label.setStyleSheet("color: #00E5FF; font-weight: bold;")
+        zoom_layout.addWidget(zoom_label)
+        
+        # Zoom slider
+        self.zoom_slider = QSlider(Qt.Horizontal)
+        self.zoom_slider.setRange(10, 200)
+        self.zoom_slider.setValue(100)
+        self.zoom_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #555555;
+                height: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                    stop:0 #0D47A1, stop:1 #00BCD4);
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #00E5FF;
+                border: 2px solid #FFFFFF;
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
+            }
+        """)
+        self.zoom_slider.valueChanged.connect(self.update_zoom)
+        self.zoom_slider.setFixedWidth(150)
+        zoom_layout.addWidget(self.zoom_slider)
+        
+        # Zoom value display
+        self.zoom_value = QLabel("100%")
+        self.zoom_value.setStyleSheet("color: #00E5FF; min-width: 50px;")
+        zoom_layout.addWidget(self.zoom_value)
+        
+        # Reset button
+        self.reset_btn = QPushButton("Reset")
+        self.reset_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #263238;
+                color: #00E5FF;
+                border: 1px solid #00BCD4;
+                border-radius: 12px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background-color: #37474F;
+                border: 1px solid #00E5FF;
+            }
+        """)
+        self.reset_btn.clicked.connect(self.reset_view)
+        zoom_layout.addWidget(self.reset_btn)
+        
+        # Style zoom controls panel
+        self.zoom_controls.setStyleSheet("""
+            background-color: rgba(13, 25, 38, 200);
+            border-radius: 15px;
+            border: 1px solid #00E5FF;
+        """)
+        
+        # Add zoom controls to HUD
+        hud_layout.addWidget(self.zoom_controls, 0, Qt.AlignTop)
+        hud_layout.addStretch()
+        
+        # Coordinates display
+        self.coord_display = QLabel("Coordinates: ---, ---")
+        self.coord_display.setStyleSheet("""
+            color: #00E5FF;
+            background-color: rgba(13, 25, 38, 200);
+            border-radius: 10px;
+            padding: 5px 10px;
+            font-family: 'Courier New';
+            border: 1px solid #00E5FF;
+        """)
+        self.coord_display.setAlignment(Qt.AlignCenter)
+        hud_layout.addWidget(self.coord_display, 0, Qt.AlignBottom | Qt.AlignRight)
+        
+        # Make sure HUD is on top
+        self.hud_container.raise_()
+        
+        # State variables
+        self.pixmap = None
+        self.zoom_level = 100
+        self.original_pixmap = None
+        
+        # Enable mouse tracking
+        self.setMouseTracking(True)
+        self.image_label.setMouseTracking(True)
+    
+    def set_image(self, image_path):
+        """Load and display an image with improved visibility"""
+        try:
+            # Skip if this is a text message
+            if isinstance(image_path, str) and (image_path.startswith("No image") or image_path.startswith("Failed")):
+                self.image_label.setText(image_path)
+                self.pixmap = None
+                self.original_pixmap = None
+                print(f"Setting text message: {image_path}")
+                return
+            
+            print(f"LOADING IMAGE FROM: {image_path}")
+            print(f"File exists: {os.path.exists(image_path)}")
+            print(f"File size: {os.path.getsize(image_path)} bytes")
+            
+            # Create and check pixmap directly
+            pixmap = QPixmap(image_path)
+            if pixmap.isNull():
+                print(f"ERROR: Pixmap is NULL for {image_path}")
+                self.image_label.setText(f"Failed to load image: {image_path}")
+                return
+            
+            print(f"Pixmap loaded successfully: {pixmap.width()}x{pixmap.height()}")
+            
+            # CRITICAL FIX - make sure we're using a QLabel that can display a pixmap
+            if not isinstance(self.image_label, QLabel):
+                print("ERROR: image_label is not a QLabel")
+                return
+            
+            # Make sure any text is cleared
+            self.image_label.clear()
+            
+            # Ensure the label can display pixmaps
+            self.image_label.setPixmap(pixmap)
+            
+            # Set a fixed size to ensure visibility
+            self.image_label.setFixedSize(pixmap.size())
+            
+            # Force the layout to update
+            self.image_layout.update()
+            self.image_container.update()
+            self.scroll_area.update()
+            
+            # Force redraw
+            self.image_label.repaint()
+            self.image_container.repaint()
+            
+            # Make everything explicitly visible
+            self.image_label.setVisible(True)
+            self.image_container.setVisible(True)
+            
+            print(f"Image displayed with size: {pixmap.width()}x{pixmap.height()}")
+        except Exception as e:
+            print(f"ERROR DISPLAYING IMAGE: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_zoom(self, value):
+        """Update the zoom level of the image"""
+        if not self.original_pixmap or self.original_pixmap.isNull():
+            return
+            
+        self.zoom_level = value
+        
+        # Calculate new size
+        new_width = int(self.original_pixmap.width() * value / 100)
+        new_height = int(self.original_pixmap.height() * value / 100)
+        
+        # Scale the image
+        scaled_pixmap = self.original_pixmap.scaled(
+            new_width, 
+            new_height,
+            Qt.KeepAspectRatio, 
+            Qt.SmoothTransformation
+        )
+        
+        # Update the image label
+        self.image_label.setPixmap(scaled_pixmap)
+        
+        # Adjust the size of the image container to match the image size
+        self.image_label.setFixedSize(scaled_pixmap.size())
+        
+        # Update zoom display
+        self.zoom_value.setText(f"{value}%")
+        
+        # Update the coordinates display
+        self.coord_display.setText(f"Zoom: {value}%")
+    
+    def reset_view(self):
+        """Reset zoom to 100%"""
+        self.zoom_slider.setValue(100)
+    
+    def resizeEvent(self, event):
+        """Handle resize events to keep HUD properly positioned"""
+        super().resizeEvent(event)
+        self.hud_container.setGeometry(self.rect())
+    
+    def mouseMoveEvent(self, event):
+        """Track mouse movement for coordinate display"""
+        if not self.pixmap or self.pixmap.isNull():
+            return
+            
+        # Get position relative to the scroll area's viewport
+        viewport_pos = self.scroll_area.viewport().mapFrom(self, event.pos())
+        
+        # Get position in the image label's coordinate system
+        label_pos = self.image_label.mapFrom(self.scroll_area.viewport(), viewport_pos)
+        
+        # Check if the position is within the image label
+        if self.image_label.rect().contains(label_pos):
+            # Convert to normalized coordinates (0-1)
+            x_rel = max(0, min(1, label_pos.x() / self.image_label.width()))
+            y_rel = max(0, min(1, label_pos.y() / self.image_label.height()))
+            
+            # Update coordinate display
+            self.coord_display.setText(f"Coordinates: {x_rel:.3f}, {y_rel:.3f}")
+    
+    def mousePressEvent(self, event):
+        """Handle mouse clicks to select elements"""
+        if not self.pixmap or self.pixmap.isNull() or event.button() != Qt.LeftButton:
+            return
+            
+        # Get position relative to the scroll area's viewport
+        viewport_pos = self.scroll_area.viewport().mapFrom(self, event.pos())
+        
+        # Get position in the image label's coordinate system
+        label_pos = self.image_label.mapFrom(self.scroll_area.viewport(), viewport_pos)
+        
+        # Check if the position is within the image label
+        if self.image_label.rect().contains(label_pos):
+            # Convert to normalized coordinates (0-1)
+            x_rel = max(0, min(1, label_pos.x() / self.image_label.width()))
+            y_rel = max(0, min(1, label_pos.y() / self.image_label.height()))
+            
+            # Emit the click signal with coordinates
+            self.element_clicked.emit(QPointF(x_rel, y_rel))
+
+
+class FuturisticTabWidget(QTabWidget):
+    """Custom tab widget with futuristic styling"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTabPosition(QTabWidget.North)
+        self.setDocumentMode(True)
+        self.setStyleSheet("""
+            QTabWidget::pane {
+                border: 2px solid #00BCD4;
+                border-radius: 10px;
+                background-color: #1A2327;
+            }
+            QTabBar::tab {
+                background-color: #263238;
+                color: #B0BEC5;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                min-width: 100px;
+                padding: 8px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1A2327;
+                color: #00E5FF;
+                border-top: 2px solid #00E5FF;
+            }
+            QTabBar::tab:hover {
+                background-color: #37474F;
+            }
+        """)
+        
+        # Add glow effect to selected tab
+        self.currentChanged.connect(self.update_tab_effects)
+        
+    def update_tab_effects(self, index):
+        # Placeholder for future tab transition effects
+        pass
+
+
+class FuturisticStatusPanel(QWidget):
+    """Animated status panel with futuristic design"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(60)
+        
+        # Main layout
+        self.layout = QHBoxLayout(self)
+        
+        # Progress indicator (circular)
+        self.progress_dial = QDial()
+        self.progress_dial.setNotchesVisible(True)
+        self.progress_dial.setRange(0, 100)
+        self.progress_dial.setValue(0)
+        self.progress_dial.setFixedSize(60, 60)
+        self.progress_dial.setEnabled(False)  # Purely visual
+        self.progress_dial.setStyleSheet("""
+            QDial {
+                background-color: #0D1926;
+                color: #00E5FF;
+            }
+        """)
+        
+        # Status message with animated text
+        self.status_label = AnimatedLabel("SYSTEM READY")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("""
+            font-size: 16px;
+            font-weight: bold;
+            color: #00E5FF;
+            font-family: 'Courier New';
+        """)
+        
+        # Details area
+        self.details = QLabel("Awaiting commands...")
+        self.details.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.details.setStyleSheet("""
+            color: #B0BEC5;
+            font-style: italic;
+        """)
+        
+        # Action buttons container
+        action_container = QWidget()
+        action_layout = QHBoxLayout(action_container)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Cancel button that appears during operations
+        self.cancel_btn = QPushButton("ABORT")
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #B71C1C;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #D32F2F;
+            }
+        """)
+        self.cancel_btn.setVisible(False)
+        action_layout.addWidget(self.cancel_btn)
+        
+        # Add all to main layout
+        self.layout.addWidget(self.progress_dial)
+        self.layout.addWidget(self.status_label, 1)
+        self.layout.addWidget(self.details, 2)
+        self.layout.addWidget(action_container)
+        
+        # Set futuristic panel styling
+        self.setStyleSheet("""
+            FuturisticStatusPanel {
+                background-color: #0D1926;
+                border: 1px solid #00BCD4;
+                border-radius: 10px;
+            }
+        """)
+        
+        # Animation timer for "scanning" effect
+        self.scan_timer = QTimer()
+        self.scan_timer.timeout.connect(self.update_scan_animation)
+        self.scan_counter = 0
+        
+    def set_progress(self, value):
+        self.progress_dial.setValue(value)
+        
+    def set_status(self, message, details=""):
+        self.status_label.setText(message)
+        if details:
+            self.details.setText(details)
+        self.status_label.flash()
+            
+    def start_operation(self, message):
+        """Start an operation with animated scanning effect"""
+        self.set_status(message, "Processing...")
+        self.cancel_btn.setVisible(True)
+        self.scan_counter = 0
+        self.scan_timer.start(100)
+        
+    def end_operation(self, success=True):
+        """End the current operation"""
+        self.scan_timer.stop()
+        self.cancel_btn.setVisible(False)
+        if success:
+            self.set_status("OPERATION COMPLETE", "Task completed successfully")
+        else:
+            self.set_status("OPERATION FAILED", "An error occurred")
+            
+    def update_scan_animation(self):
+        """Update the scanning animation effect"""
+        self.scan_counter += 5
+        if self.scan_counter > 100:
+            self.scan_counter = 0
+        self.progress_dial.setValue(self.scan_counter)
+
+
+class GlowingButton(QPushButton):
+    """Button with animated glowing effect"""
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setStyleSheet("""
+            GlowingButton {
+                background-color: #0D47A1;
+                color: white;
+                border: none;
+                border-radius: 15px;
+                padding: 12px 24px;
+                font-weight: bold;
+            }
+            GlowingButton:hover {
+                background-color: #1565C0;
+            }
+        """)
+        
+        # Create glow effect animation
+        self.glow_animation = QPropertyAnimation(self, b"styleSheet")
+        self.glow_animation.setDuration(800)
+        self.glow_animation.setStartValue("""
+            GlowingButton {
+                background-color: #0D47A1;
+                color: white;
+                border: none;
+                border-radius: 15px;
+                padding: 12px 24px;
+                font-weight: bold;
+            }
+        """)
+        self.glow_animation.setEndValue("""
+            GlowingButton {
+                background-color: #1E88E5;
+                color: white;
+                border: 2px solid #4FC3F7;
+                border-radius: 15px;
+                padding: 12px 24px;
+                font-weight: bold;
+            }
+        """)
+        self.glow_animation.setLoopCount(3)
+        
+    def pulse(self):
+        """Start pulsing animation"""
+        self.glow_animation.start()
+
+
+class MatrixLoadingAnimation(QWidget):
+    """Matrix-style loading animation"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(200, 40)
+        self.characters = "01"
+        self.columns = 20
+        self.positions = [0] * self.columns
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update)
+        self.active = False
+        
+    def start(self):
+        self.active = True
+        self.timer.start(100)
+        
+    def stop(self):
+        self.active = False
+        self.timer.stop()
+        
+    def paintEvent(self, event):
+        if not self.active:
+            return
+            
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0))
+        
+        char_width = self.width() / self.columns
+        char_height = 20
+        
+        painter.setPen(QColor(0, 230, 118))
+        painter.setFont(QFont("Courier", 10))
+        
+        for i in range(self.columns):
+            x = i * char_width
+            y = self.positions[i] * char_height
+            
+            # Draw random binary digit
+            char = self.characters[random.randint(0, len(self.characters)-1)]
+            painter.drawText(x, y % self.height(), char)
+            
+            # Move position
+            self.positions[i] += 1
+            if self.positions[i] * char_height > self.height():
+                self.positions[i] = 0
+
+
+class SciFiProgressMeter(QWidget):
+    """Futuristic progress meter with segments"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(30)
+        self.value = 0
+        self.segments = 20
+        
+    def setValue(self, value):
+        self.value = max(0, min(100, value))
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Draw background
+        painter.fillRect(self.rect(), QColor(13, 25, 38))
+        
+        # Calculate segment width
+        segment_width = self.width() / self.segments
+        filled_segments = int(self.value / 100 * self.segments)
+        
+        # Draw filled segments
+        for i in range(filled_segments):
+            x = i * segment_width
+            segment_rect = QRect(int(x), 0, int(segment_width - 2), self.height())
+            
+            # Use gradient for segments
+            if i < self.segments * 0.3:
+                color = QColor(0, 229, 255)  # Cyan
+            elif i < self.segments * 0.7:
+                color = QColor(0, 255, 170)  # Cyan-green
+            else:
+                color = QColor(0, 255, 85)   # Green
+                
+            painter.fillRect(segment_rect, color)
+            
+        # Draw text
+        painter.setPen(QColor(255, 255, 255))
+        painter.setFont(QFont("Arial", 9, QFont.Bold))
+        painter.drawText(self.rect(), Qt.AlignCenter, f"{self.value}%")
+
+
+class HolographicImageDisplay(QWidget):
+    """Image display with holographic effect"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pixmap = None
+        self.scanline_pos = 0
+        self.scan_timer = QTimer()
+        self.scan_timer.timeout.connect(self.update_scanline)
+        
+    def set_image(self, image_path):
+        self.pixmap = QPixmap(image_path)
+        self.update()
+        self.scan_timer.start(30)
+        
+    def update_scanline(self):
+        self.scanline_pos += 5
+        if self.scanline_pos > self.height():
+            self.scanline_pos = 0
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        
+        # Fill background
+        painter.fillRect(self.rect(), QColor(0, 10, 20))
+        
+        if self.pixmap and not self.pixmap.isNull():
+            # Draw the image
+            scaled_pixmap = self.pixmap.scaled(
+                self.size(), 
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+            
+            # Calculate position to center the image
+            x = (self.width() - scaled_pixmap.width()) // 2
+            y = (self.height() - scaled_pixmap.height()) // 2
+            
+            # Draw base image
+            painter.drawPixmap(x, y, scaled_pixmap)
+            
+            # Draw holographic frame
+            frame_color = QColor(0, 229, 255, 150)
+            pen = QPen(frame_color)
+            pen.setWidth(3)
+            painter.setPen(pen)
+            frame_rect = QRect(x-10, y-10, scaled_pixmap.width()+20, scaled_pixmap.height()+20)
+            painter.drawRect(frame_rect)
+            
+            # Draw corner brackets
+            corner_size = 20
+            
+            # Top-left
+            painter.drawLine(x-10, y-10, x-10+corner_size, y-10)
+            painter.drawLine(x-10, y-10, x-10, y-10+corner_size)
+            
+            # Top-right
+            painter.drawLine(x+scaled_pixmap.width()+10, y-10, x+scaled_pixmap.width()+10-corner_size, y-10)
+            painter.drawLine(x+scaled_pixmap.width()+10, y-10, x+scaled_pixmap.width()+10, y-10+corner_size)
+            
+            # Bottom-left
+            painter.drawLine(x-10, y+scaled_pixmap.height()+10, x-10+corner_size, y+scaled_pixmap.height()+10)
+            painter.drawLine(x-10, y+scaled_pixmap.height()+10, x-10, y+scaled_pixmap.height()+10-corner_size)
+            
+            # Bottom-right
+            painter.drawLine(x+scaled_pixmap.width()+10, y+scaled_pixmap.height()+10, x+scaled_pixmap.width()+10-corner_size, y+scaled_pixmap.height()+10)
+            painter.drawLine(x+scaled_pixmap.width()+10, y+scaled_pixmap.height()+10, x+scaled_pixmap.width()+10, y+scaled_pixmap.height()+10-corner_size)
+            
+            # Draw scan line
+            scan_rect = QRect(x, y + self.scanline_pos % scaled_pixmap.height(), scaled_pixmap.width(), 2)
+            painter.fillRect(scan_rect, QColor(0, 255, 255, 150))
+            
+            # Draw digital readout text
+            painter.setPen(QColor(0, 229, 255))
+            painter.setFont(QFont("Courier New", 8))
+            painter.drawText(x, y+scaled_pixmap.height()+25, f"RESOLUTION: {scaled_pixmap.width()}x{scaled_pixmap.height()}")
+            painter.drawText(x, y+scaled_pixmap.height()+40, f"SCAN: {self.scanline_pos / scaled_pixmap.height()*100:.1f}%")
+
+
+class SoundEffects:
+    """Class to manage sound effects (disabled for now)"""
+    @staticmethod
+    def _try_play(sound_path):
+        """Stub method - sound effects disabled"""
+        # Just log that we would have played the sound
+        print(f"[Sound disabled] Would have played: {sound_path}")
+
+    @staticmethod
+    def button_click():
+        # No actual sound playback
+        print("[Sound disabled] Button click sound")
+        
+    @staticmethod
+    def scan_complete():
+        # No actual sound playback
+        print("[Sound disabled] Scan complete sound")
+        
+    @staticmethod
+    def error():
+        # No actual sound playback
+        print("[Sound disabled] Error sound")
+
+
 class WebAutomationApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -290,7 +1008,8 @@ class WebAutomationApp(QMainWindow):
     
     def init_ui(self):
         self.setWindowTitle("Web Automation Assistant")
-        self.setGeometry(100, 100, 1400, 900)
+        # Make window size more compact, especially height
+        self.setGeometry(100, 100, 1000, 600)  # Reduced from 700 to 600
         
         # Styling
         self.setStyleSheet("""
@@ -358,13 +1077,13 @@ class WebAutomationApp(QMainWindow):
         # Left panel - inputs and controls
         left_panel = QWidget()
         left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(20, 20, 20, 20)
-        left_layout.setSpacing(15)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(8)
         
-        # Title
-        title_label = QLabel("Web Automation Assistant")
+        # Title with futuristic styling
+        title_label = QLabel("NEURAL WEB AUTOMATION")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 15px;")
+        title_label.setStyleSheet("font-size: 22px; font-weight: bold; margin-bottom: 8px; color: #00E5FF;")
         left_layout.addWidget(title_label)
         
         # Add a description
@@ -432,10 +1151,12 @@ class WebAutomationApp(QMainWindow):
         
         prompt_layout.addWidget(QLabel("System Prompt:"))
         self.system_prompt = QLineEdit("You are an assistant that analyzes web screenshots to find buttons and elements.")
+        self.system_prompt.setFixedHeight(50)  # Reduced from default
         prompt_layout.addWidget(self.system_prompt)
         
         prompt_layout.addWidget(QLabel("User Prompt:"))
         self.user_prompt = QLineEdit("Find the main call-to-action button in this image and give me its coordinates.")
+        self.user_prompt.setFixedHeight(50)  # Reduced from default
         prompt_layout.addWidget(self.user_prompt)
         
         self.analyze_btn = QPushButton("Analyze Screenshot")
@@ -461,106 +1182,81 @@ class WebAutomationApp(QMainWindow):
         
         left_layout.addWidget(action_section)
         
-        # Progress bar
-        self.progress_section = QFrame()
-        progress_layout = QVBoxLayout()
-        self.progress_section.setLayout(progress_layout)
-        
-        progress_layout.addWidget(QLabel("Progress:"))
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        progress_layout.addWidget(self.progress_bar)
-        
-        self.status_message = AnimatedLabel("Ready")
-        self.status_message.setAlignment(Qt.AlignCenter)
-        progress_layout.addWidget(self.status_message)
-        
-        left_layout.addWidget(self.progress_section)
-        
-        # Add spacer at the bottom
-        left_layout.addStretch()
+        # Replace the status message with the futuristic status panel
+        self.status_panel = FuturisticStatusPanel()
+        self.status_panel.setMinimumHeight(60)  # Reduced from 80
+        left_layout.addWidget(self.status_panel)
         
         left_panel.setLayout(left_layout)
         
-        # Right panel - output display
-        right_panel = QSplitter(Qt.Vertical)
+        # Right panel - Use tabbed interface instead of splitter
+        self.right_panel = FuturisticTabWidget()
         
-        # Image display area
-        image_display_widget = QWidget()
-        image_display_layout = QVBoxLayout()
-        image_display_layout.setContentsMargins(20, 20, 20, 20)
+        # First tab - Interactive image viewer
+        image_tab = QWidget()
+        image_layout = QVBoxLayout(image_tab)
+        image_layout.setContentsMargins(5, 5, 5, 5)
         
-        image_header = QLabel(f"Captured Website ({SCREENSHOT_WIDTH}x{SCREENSHOT_HEIGHT})")
-        image_header.setStyleSheet("font-size: 16px;")
-        image_display_layout.addWidget(image_header)
+        self.image_viewer = InteractiveImageViewer()
+        image_layout.addWidget(self.image_viewer)
         
-        # Create a scroll area for the image
-        image_scroll = QScrollArea()
-        image_scroll.setWidgetResizable(True)
-        image_scroll.setAlignment(Qt.AlignCenter)
+        # Add the tab with an icon
+        self.right_panel.addTab(image_tab, "CAPTURE VIEW")
         
-        self.image_display = QLabel("No image captured yet")
-        self.image_display.setAlignment(Qt.AlignCenter)
-        self.image_display.setMinimumHeight(450)
-        self.image_display.setStyleSheet("background-color: #222222; border-radius: 4px;")
+        # AI response tab
+        response_tab = QWidget()
+        response_layout = QVBoxLayout(response_tab)
+        response_layout.setContentsMargins(10, 10, 10, 10)
         
-        image_scroll.setWidget(self.image_display)
-        image_display_layout.addWidget(image_scroll)
-        
-        image_display_widget.setLayout(image_display_layout)
-        right_panel.addWidget(image_display_widget)
-        
-        # AI response area
-        response_widget = QWidget()
-        response_layout = QVBoxLayout()
-        response_layout.setContentsMargins(20, 20, 20, 20)
-        
-        response_header = QLabel("AI Analysis")
-        response_header.setStyleSheet("font-size: 16px;")
+        response_header = QLabel("AI ANALYSIS RESULTS")
+        response_header.setStyleSheet("font-size: 18px; color: #00E5FF;")
         response_layout.addWidget(response_header)
         
         self.response_area = QTextEdit()
         self.response_area.setReadOnly(True)
-        self.response_area.setStyleSheet("font-size: 14px; line-height: 1.4;")
+        self.response_area.setStyleSheet("""
+            font-size: 14px; 
+            line-height: 1.6;
+            background-color: #0A192F;
+            border: 1px solid #00BCD4;
+            color: #E0F7FA;
+            padding: 15px;
+        """)
         response_layout.addWidget(self.response_area)
         
-        response_widget.setLayout(response_layout)
-        right_panel.addWidget(response_widget)
+        response_tab.setLayout(response_layout)
+        self.right_panel.addTab(response_tab, "AI ANALYSIS")
         
-        # Summary area for after clicking
-        summary_widget = QWidget()
-        summary_layout = QVBoxLayout()
-        summary_layout.setContentsMargins(20, 20, 20, 20)
+        # Results tab
+        results_tab = QWidget()
+        results_layout = QVBoxLayout(results_tab)
         
-        summary_header = QLabel("Results After Click")
-        summary_header.setStyleSheet("font-size: 16px;")
-        summary_layout.addWidget(summary_header)
+        self.result_viewer = InteractiveImageViewer()
+        results_layout.addWidget(self.result_viewer)
         
-        self.result_image = QLabel("No results yet")
-        self.result_image.setAlignment(Qt.AlignCenter)
-        self.result_image.setMinimumHeight(300)
-        self.result_image.setStyleSheet("background-color: #222222; border-radius: 4px;")
-        summary_layout.addWidget(self.result_image)
-        
-        summary_layout.addWidget(QLabel("Summary:"))
         self.summary_area = QTextEdit()
         self.summary_area.setReadOnly(True)
-        self.summary_area.setStyleSheet("font-size: 14px; line-height: 1.4;")
-        summary_layout.addWidget(self.summary_area)
+        self.summary_area.setMaximumHeight(150)
+        self.summary_area.setStyleSheet("""
+            font-size: 14px; 
+            background-color: #0A192F;
+            border: 1px solid #00BCD4;
+            color: #E0F7FA;
+        """)
+        results_layout.addWidget(self.summary_area)
         
-        summary_widget.setLayout(summary_layout)
-        right_panel.addWidget(summary_widget)
+        results_tab.setLayout(results_layout)
+        self.right_panel.addTab(results_tab, "RESULTS")
         
-        # Set size of the splitter sections - give more space to images
-        right_panel.setSizes([400, 200, 300])  # Previously [300, 200, 300]
-        
-        # Add panels to main layout
+        # Add panels to main layout with adjusted ratio
         main_layout.addWidget(left_panel, 1)
-        main_layout.addWidget(right_panel, 3)
+        main_layout.addWidget(self.right_panel, 3)
         
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+        
+        # Connect signals
+        self.image_viewer.element_clicked.connect(self.handle_element_click)
     
     def connect_to_api(self):
         """Connect to the Gradio API"""
@@ -596,10 +1292,10 @@ class WebAutomationApp(QMainWindow):
         self.execute_btn.setEnabled(False)
         
         # Clear previous data
-        self.image_display.setText("Capturing website...")
+        self.image_viewer.set_image("No image")
         self.response_area.clear()
         self.summary_area.clear()
-        self.result_image.setText("No results yet")
+        self.result_viewer.set_image("No image")
         
         # Create and start worker thread
         self.capture_thread = WebCaptureThread(url)
@@ -609,13 +1305,55 @@ class WebAutomationApp(QMainWindow):
         self.capture_thread.start()
     
     def handle_screenshot(self, screenshot_path):
-        """Display the captured screenshot"""
+        """Display the captured screenshot with a clean, simple approach"""
         self.screenshot_path = screenshot_path
-        self.display_image(screenshot_path, self.image_display)
+        
+        if not os.path.exists(screenshot_path):
+            self.update_status(f"Screenshot file not found: {screenshot_path}", 0)
+            return
+        
+        print(f"DIRECT DISPLAY: Loading image from {screenshot_path}")
+        
+        # Create a clean image display without extra controls
+        direct_display = QLabel()
+        direct_pixmap = QPixmap(screenshot_path)
+        
+        if not direct_pixmap.isNull():
+            # Set pixmap with appropriate scaling for the view
+            scaled_pixmap = direct_pixmap.scaled(
+                direct_pixmap.width(),  # Original width
+                direct_pixmap.height(),  # Original height
+                Qt.KeepAspectRatio, 
+                Qt.SmoothTransformation
+            )
+            
+            # Set the pixmap directly
+            direct_display.setPixmap(scaled_pixmap)
+            direct_display.setAlignment(Qt.AlignCenter)
+            
+            # Create a clean tab with just the image
+            image_tab = QWidget()
+            image_layout = QVBoxLayout(image_tab)
+            image_layout.setContentsMargins(10, 10, 10, 10)
+            image_layout.addWidget(direct_display, 1, Qt.AlignCenter)
+            
+            # Replace the current tab
+            self.right_panel.removeTab(0)
+            self.right_panel.insertTab(0, image_tab, "CAPTURE VIEW")
+            self.right_panel.setCurrentIndex(0)
+            
+            print("Display complete - image size: " + 
+                  f"{direct_pixmap.width()}x{direct_pixmap.height()}")
+        else:
+            print("ERROR: Failed to load pixmap for display")
+        
+        # Enable buttons
         self.analyze_btn.setEnabled(True)
         self.capture_btn.setEnabled(True)
-        self.update_status("Screenshot captured successfully! Ready for analysis.", 100)
-        self.status_message.flash()
+        
+        # Update status
+        self.update_status("Capture complete - ready for analysis", 100)
+        self.status_panel.status_label.flash()
     
     def analyze_screenshot(self):
         """Send the screenshot to the API for analysis"""
@@ -642,26 +1380,223 @@ class WebAutomationApp(QMainWindow):
         self.model_thread.start()
     
     def handle_model_response(self, result):
-        """Handle the model's response"""
+        """Handle the model's response and show highlighted image"""
         response_text = result.get("response", "")
         self.coordinates_data = result.get("coordinates")
         
         # Display the response
         self.response_area.setText(response_text)
         
+        # Switch to the AI Analysis tab to show results
+        self.right_panel.setCurrentIndex(1)
+        
         # Highlight the detected element on the image if coordinates were found
         if self.coordinates_data:
-            self.draw_and_display_highlight(self.coordinates_data)
+            # Generate a highlighted image and show it
+            highlight_path = self.create_highlighted_image()
+            
+            # Show the coordinates in the status area and the dedicated display
+            coords = self.coordinates_data['coords']
+            if self.coordinates_data['type'] == 'point':
+                coords_text = f"Coordinates: ({coords[0]:.3f}, {coords[1]:.3f})"
+            else:  # bbox
+                coords_text = f"Coordinates: ({coords[0]:.3f}, {coords[1]:.3f}, {coords[2]:.3f}, {coords[3]:.3f})"
+            
+            # Update coordinate display
+            self.show_coordinates_display(coords_text)
+            
+            # Update status
+            self.update_status(f"Element detected! {coords_text}", 100)
+            
+            # Enable execute button
             self.execute_btn.setEnabled(True)
-            self.update_status("Element detected! Ready to click.", 100)
         else:
             self.update_status("No clickable element detected in the AI response.", 100)
         
         # Re-enable buttons
         self.analyze_btn.setEnabled(True)
         self.capture_btn.setEnabled(True)
+    
+    def create_highlighted_image(self):
+        """Create a highlighted image with more prominent visualization"""
+        if not self.coordinates_data or not self.screenshot_path:
+            return None
         
-        self.status_message.flash()
+        try:
+            # Load the image
+            img = Image.open(self.screenshot_path)
+            width, height = img.size
+            
+            # Make sure image is in RGB mode
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            
+            # Create a more visible drawing context
+            draw = ImageDraw.Draw(img)
+            
+            if self.coordinates_data['type'] == 'point':
+                # Get coordinates
+                x, y = self.coordinates_data['coords']
+                center_x = int(x * width)
+                center_y = int(y * height)
+                
+                # Make a more visible targeting element
+                radius = max(15, min(width, height) // 25)
+                
+                # 1. Draw pulsing circles (multiple rings with different colors)
+                colors = ["#00E5FF", "#FF5722", "#FFEB3B"]
+                for i, color in enumerate(colors):
+                    r = radius - (i * 3)
+                    if r > 0:
+                        draw.ellipse(
+                            (center_x - r, center_y - r, center_x + r, center_y + r),
+                            outline=color,
+                            width=3
+                        )
+                
+                # 2. Draw crosshair with extended lines
+                line_length = radius * 2
+                # Horizontal line
+                draw.line(
+                    (center_x - line_length, center_y, center_x + line_length, center_y),
+                    fill="#FF5722",
+                    width=2
+                )
+                # Vertical line
+                draw.line(
+                    (center_x, center_y - line_length, center_x, center_y + line_length),
+                    fill="#FF5722",
+                    width=2
+                )
+                
+                # 3. Add coordinate text near the point
+                font_size = 20
+                # PIL doesn't come with fonts, so we'll draw the text outline
+                coord_text = f"({x:.3f}, {y:.3f})"
+                # Draw text with outline effect
+                for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                    draw.text(
+                        (center_x + radius + dx, center_y - radius + dy),
+                        coord_text,
+                        fill="#000000"
+                    )
+                draw.text(
+                    (center_x + radius, center_y - radius),
+                    coord_text,
+                    fill="#FFFFFF"
+                )
+                
+            else:  # bbox
+                # Get coordinates
+                x_min, y_min, x_max, y_max = self.coordinates_data['coords']
+                
+                # Convert to pixel coordinates
+                x_min_px = int(x_min * width)
+                y_min_px = int(y_min * height)
+                x_max_px = int(x_max * width)
+                y_max_px = int(y_max * height)
+                
+                # Calculate dimensions
+                box_width = x_max_px - x_min_px
+                box_height = y_max_px - y_min_px
+                
+                # 1. Draw semi-transparent highlight overlay
+                # Create a transparent overlay for the inside of the box
+                overlay = Image.new('RGBA', (box_width, box_height), (255, 87, 34, 80))  # Semi-transparent orange
+                img.paste(overlay, (x_min_px, y_min_px), overlay)
+                
+                # 2. Draw border with multiple lines for visibility
+                for i in range(3):
+                    draw.rectangle(
+                        [(x_min_px+i, y_min_px+i), (x_max_px-i, y_max_px-i)],
+                        outline="#00E5FF",
+                        width=2
+                    )
+                
+                # 3. Add corner brackets for a targeting effect
+                corner_len = min(30, box_width//4, box_height//4)
+                
+                # Draw corner brackets with bright color
+                for x, y in [(x_min_px, y_min_px), (x_max_px, y_min_px), 
+                             (x_min_px, y_max_px), (x_max_px, y_max_px)]:
+                    # Determine direction for each corner
+                    dx = 1 if x == x_min_px else -1
+                    dy = 1 if y == y_min_px else -1
+                    
+                    # Horizontal line
+                    draw.line(
+                        (x, y, x + (corner_len * dx), y),
+                        fill="#FFEB3B",
+                        width=3
+                    )
+                    # Vertical line
+                    draw.line(
+                        (x, y, x, y + (corner_len * dy)),
+                        fill="#FFEB3B",
+                        width=3
+                    )
+                
+                # 4. Add coordinate text
+                coord_text = f"({x_min:.2f}, {y_min:.2f}, {x_max:.2f}, {y_max:.2f})"
+                text_x = x_min_px + 5
+                text_y = y_min_px - 25 if y_min_px > 25 else y_max_px + 5
+                
+                # Draw text with outline for visibility
+                for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                    draw.text(
+                        (text_x + dx, text_y + dy),
+                        coord_text,
+                        fill="#000000"
+                    )
+                draw.text(
+                    (text_x, text_y),
+                    coord_text,
+                    fill="#FFFFFF"
+                )
+            
+            # Save highlighted image
+            highlight_path = "temp_highlight_image.png"
+            img.save(highlight_path)
+            
+            # Also make sure to display this highlighted image
+            self.display_image_in_tab(highlight_path, 0, "CAPTURE VIEW")
+            
+            return highlight_path
+            
+        except Exception as e:
+            print(f"Error creating highlighted image: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def display_image_in_tab(self, image_path, tab_index, tab_name):
+        """Display an image in the specified tab with a clean approach"""
+        if not image_path or not os.path.exists(image_path):
+            print(f"Image not found: {image_path}")
+            return
+        
+        # Create a clean image display
+        direct_display = QLabel()
+        direct_pixmap = QPixmap(image_path)
+        
+        if not direct_pixmap.isNull():
+            # Set the pixmap directly
+            direct_display.setPixmap(direct_pixmap)
+            direct_display.setAlignment(Qt.AlignCenter)
+            
+            # Create a clean tab with just the image
+            image_tab = QWidget()
+            image_layout = QVBoxLayout(image_tab)
+            image_layout.setContentsMargins(10, 10, 10, 10)
+            image_layout.addWidget(direct_display, 1, Qt.AlignCenter)
+            
+            # Replace the tab
+            self.right_panel.removeTab(tab_index)
+            self.right_panel.insertTab(tab_index, image_tab, tab_name)
+            
+            print(f"Image displayed in tab {tab_index} ({tab_name})")
+        else:
+            print(f"ERROR: Failed to load pixmap for tab {tab_index}")
     
     def execute_action(self):
         """Execute the click action on the detected element"""
@@ -693,11 +1628,28 @@ class WebAutomationApp(QMainWindow):
     
     def handle_action_result(self, screenshot_path, summary):
         """Handle the results after clicking the element"""
-        # Display the new screenshot
-        self.display_image(screenshot_path, self.result_image)
+        if not os.path.exists(screenshot_path):
+            self.update_status("Screenshot not found after action", 0)
+            return
+        
+        # Display the new screenshot in the Results tab
+        self.display_image_in_tab(screenshot_path, 2, "RESULTS")
+        
+        # Switch to the Results tab
+        self.right_panel.setCurrentIndex(2)
         
         # Display the summary
         self.summary_area.setText(summary)
+        
+        # Update status with a coordinate indicator widget at bottom of screen
+        coords = self.coordinates_data['coords']
+        if self.coordinates_data['type'] == 'point':
+            coords_text = f"Coordinates: ({coords[0]:.3f}, {coords[1]:.3f})"
+        else:
+            coords_text = f"Coordinates: ({coords[0]:.3f}, {coords[1]:.3f}, {coords[2]:.3f}, {coords[3]:.3f})"
+        
+        # Create a coordinates display at the bottom of the UI
+        self.show_coordinates_display(coords_text)
         
         # Re-enable buttons
         self.execute_btn.setEnabled(True)
@@ -705,98 +1657,138 @@ class WebAutomationApp(QMainWindow):
         self.capture_btn.setEnabled(True)
         
         self.update_status("Action completed successfully!", 100)
-        self.status_message.flash()
     
-    def display_image(self, image_path, display_widget):
-        """Display an image in the specified widget"""
-        try:
-            pixmap = QPixmap(image_path)
-            
-            if pixmap.isNull():
-                display_widget.setText("Failed to load image")
-                return
-            
-            # Scale to larger dimensions while preserving aspect ratio
-            pixmap = pixmap.scaled(DISPLAY_WIDTH, DISPLAY_HEIGHT, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            display_widget.setPixmap(pixmap)
-            display_widget.setAlignment(Qt.AlignCenter)
-        except Exception as e:
-            display_widget.setText(f"Error displaying image: {str(e)}")
-    
-    def draw_and_display_highlight(self, coordinates_data):
-        """Draw a highlight on the detected element in the image"""
-        if not coordinates_data or not self.screenshot_path:
-            return
+    def show_coordinates_display(self, coords_text):
+        """Show a futuristic coordinates display at the bottom of the UI"""
+        # Create or update the coordinates display label
+        if not hasattr(self, 'coords_display'):
+            self.coords_display = QLabel(self)
+            self.coords_display.setAlignment(Qt.AlignCenter)
+            self.coords_display.setStyleSheet("""
+                background-color: rgba(0, 229, 255, 100);
+                color: white;
+                border: 1px solid #00E5FF;
+                border-radius: 10px;
+                padding: 5px 10px;
+                font: bold 14px 'Courier New';
+            """)
         
-        try:
-            # Load the image
-            img = Image.open(self.screenshot_path)
-            width, height = img.size
-            
-            # Make sure image is in RGB mode
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            
-            # Draw highlight
-            draw = ImageDraw.Draw(img)
-            
-            if coordinates_data['type'] == 'point':
-                # Draw a point marker (circle with cross)
-                x, y = coordinates_data['coords']
-                center_x = int(x * width)
-                center_y = int(y * height)
-                
-                radius = max(10, min(width, height) // 30)
-                
-                # Draw cross
-                draw.line([(center_x - radius, center_y), (center_x + radius, center_y)], fill="red", width=3)
-                draw.line([(center_x, center_y - radius), (center_x, center_y + radius)], fill="red", width=3)
-                
-                # Draw circle
-                draw.ellipse((center_x - radius, center_y - radius, center_x + radius, center_y + radius), 
-                             outline="red", width=2)
-                
-            else:  # bbox
-                # Draw rectangle for bounding box
-                x_min, y_min, x_max, y_max = coordinates_data['coords']
-                
-                # Convert normalized coordinates to pixel coordinates
-                x_min_px = int(x_min * width)
-                y_min_px = int(y_min * height)
-                x_max_px = int(x_max * width)
-                y_max_px = int(y_max * height)
-                
-                # Draw rectangle with semi-transparent fill
-                # First draw a semi-transparent fill
-                for i in range(3):  # Make the border more visible with multiple lines
-                    draw.rectangle(
-                        [(x_min_px+i, y_min_px+i), (x_max_px-i, y_max_px-i)],
-                        outline="red",
-                        width=2
-                    )
-            
-            # Flash effect animation on the border
-            temp_path = "temp_highlight_image.png"
-            img.save(temp_path)
-            self.display_image(temp_path, self.image_display)
-            
-        except Exception as e:
-            self.update_status(f"Error highlighting element: {str(e)}", 0)
+        # Set the text and position it at the bottom right
+        self.coords_display.setText(coords_text)
+        self.coords_display.adjustSize()
+        
+        # Position at bottom right
+        x = self.width() - self.coords_display.width() - 20
+        y = self.height() - self.coords_display.height() - 20
+        self.coords_display.move(x, y)
+        
+        # Make sure it's visible and on top
+        self.coords_display.setVisible(True)
+        self.coords_display.raise_()
     
     def update_status(self, message, progress):
-        """Update the status message and progress bar"""
-        self.status_message.setText(message)
-        self.progress_bar.setValue(progress)
+        """Update the status panel"""
+        self.status_panel.set_status(message)
+        self.status_panel.set_progress(progress)
     
     def handle_error(self, error_msg):
         """Handle errors from worker threads"""
         self.update_status(f"Error: {error_msg}", 0)
-        self.status_message.setStyleSheet("color: #FF5555;")
+        self.status_panel.set_status("Error: " + error_msg, "")
         
         # Re-enable buttons
         self.capture_btn.setEnabled(True)
         self.analyze_btn.setEnabled(bool(self.screenshot_path))
         self.execute_btn.setEnabled(bool(getattr(self, 'coordinates_data', None)))
+
+    def handle_element_click(self, point):
+        """Handle user clicking on image directly"""
+        # This enables clicking directly on the image to select elements
+        if self.screenshot_path:
+            self.coordinates_data = {'type': 'point', 'coords': (point.x(), point.y())}
+            self.draw_element_highlight(point.x(), point.y())
+            self.execute_btn.setEnabled(True)
+            self.update_status(f"Element selected at ({point.x():.3f}, {point.y():.3f})", 100)
+        
+    def draw_element_highlight(self, x, y):
+        """Draw futuristic highlight on selected element"""
+        if not self.screenshot_path:
+            return
+        
+        # Create a copy of the screenshot
+        img = Image.open(self.screenshot_path)
+        width, height = img.size
+        draw = ImageDraw.Draw(img)
+        
+        # Calculate pixel coordinates
+        center_x = int(x * width)
+        center_y = int(y * height)
+        radius = max(20, min(width, height) // 20)
+        
+        # Draw targeting reticle/crosshair (more futuristic)
+        # Outer circle
+        draw.ellipse((center_x - radius, center_y - radius, 
+                     center_x + radius, center_y + radius), 
+                     outline="#00E5FF", width=2)
+        
+        # Inner circle
+        inner_radius = radius // 2
+        draw.ellipse((center_x - inner_radius, center_y - inner_radius, 
+                     center_x + inner_radius, center_y + inner_radius), 
+                     outline="#00E5FF", width=1)
+        
+        # Crosshair lines
+        line_length = radius * 1.5
+        # Horizontal
+        draw.line((center_x - line_length, center_y, 
+                   center_x - radius, center_y), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x + radius, center_y, 
+                   center_x + line_length, center_y), 
+                   fill="#00E5FF", width=2)
+        # Vertical
+        draw.line((center_x, center_y - line_length, 
+                   center_x, center_y - radius), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x, center_y + radius, 
+                   center_x, center_y + line_length), 
+                   fill="#00E5FF", width=2)
+        
+        # Draw diagonal corners (like a targeting system)
+        corner_size = radius // 2
+        # Top-left
+        draw.line((center_x - radius, center_y - radius, 
+                   center_x - radius + corner_size, center_y - radius), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x - radius, center_y - radius, 
+                   center_x - radius, center_y - radius + corner_size), 
+                   fill="#00E5FF", width=2)
+        # Top-right
+        draw.line((center_x + radius, center_y - radius, 
+                   center_x + radius - corner_size, center_y - radius), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x + radius, center_y - radius, 
+                   center_x + radius, center_y - radius + corner_size), 
+                   fill="#00E5FF", width=2)
+        # Bottom-left
+        draw.line((center_x - radius, center_y + radius, 
+                   center_x - radius + corner_size, center_y + radius), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x - radius, center_y + radius, 
+                   center_x - radius, center_y + radius - corner_size), 
+                   fill="#00E5FF", width=2)
+        # Bottom-right
+        draw.line((center_x + radius, center_y + radius, 
+                   center_x + radius - corner_size, center_y + radius), 
+                   fill="#00E5FF", width=2)
+        draw.line((center_x + radius, center_y + radius, 
+                   center_x + radius, center_y + radius - corner_size), 
+                   fill="#00E5FF", width=2)
+        
+        # Save and display the highlighted image
+        temp_path = "temp_highlight_image.png"
+        img.save(temp_path)
+        self.image_viewer.set_image(temp_path)
 
 
 if __name__ == "__main__":
