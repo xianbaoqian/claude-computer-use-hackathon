@@ -1,0 +1,17 @@
+# Core dependencies
+torch==2.1.0
+torchvision==0.16.0
+Pillow==10.1.0
+open_clip_torch==2.22.0
+requests==2.31.0
+
+# Custom transformers fork required by Magma-8B
+git+https://github.com/jwyang/transformers.git@dev/jwyang-v4.48.2
+
+# For the Gradio interface
+gradio==4.13.0
+matplotlib==3.8.0
+numpy==1.24.3
+
+# Optional utilities
+tqdm==4.66.1 

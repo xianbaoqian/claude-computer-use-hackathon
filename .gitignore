@@ -11,6 +11,9 @@ __pycache__/
 *.so
 .Python
 
+
+.gradio
+
 # Distribution / packaging
 dist/
 build/

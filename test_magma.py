@@ -24,8 +24,19 @@ convs = [
 # Load the model and processor
 model = AutoModelForCausalLM.from_pretrained("microsoft/Magma-8B", trust_remote_code=True)
 processor = AutoProcessor.from_pretrained("microsoft/Magma-8B", trust_remote_code=True)
-# model.to("cuda")
-model.to("mps")
+
+# Automatically detect and use the appropriate device
+if torch.cuda.is_available():
+    device = "cuda"
+    print("Using CUDA")
+elif torch.backends.mps.is_available():
+    device = "mps"
+    print("Using MPS (Apple Silicon)")
+else:
+    device = "cpu"
+    print("Using CPU (warning: this will be very slow)")
+
+model.to(device)
 
 prompt = processor.tokenizer.apply_chat_template(convs, tokenize=False, add_generation_prompt=True)
 inputs = processor(images=image, texts=prompt, return_tensors="pt")
@@ -33,7 +44,7 @@ inputs = processor(images=image, texts=prompt, return_tensors="pt")
 inputs['pixel_values'] = inputs['pixel_values'].unsqueeze(0)
 inputs['image_sizes'] = inputs['image_sizes'].unsqueeze(0)
 # inputs = inputs.to("cuda")
-inputs = inputs.to("mps")
+inputs = inputs.to(device)
 
 generation_args = { 
     "max_new_tokens": 128, 
