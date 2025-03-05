@@ -75,108 +75,42 @@ class WebCaptureThread(QThread):
         try:
             self.progress_update.emit("Setting up browser...", 10)
             
-            # First, verify the URL is accessible with a simple HTTP request
-            self.progress_update.emit(f"Verifying accessibility of {self.url}...", 15)
-            try:
-                # Set a reasonable timeout for the connection test
-                socket.setdefaulttimeout(5)
-                
-                # Simple HEAD request to check if the server is reachable
-                req = urllib.request.Request(
-                    self.url,
-                    method='HEAD'
-                )
-                
-                # Try to open the URL
-                with urllib.request.urlopen(req) as response:
-                    status_code = response.getcode()
-                    print(f"Server response: HTTP {status_code}")
-                    if status_code != 200:
-                        self.progress_update.emit(f"Warning: Server returned HTTP {status_code}", 15)
-                        
-            except Exception as e:
-                print(f"URL verification warning: {str(e)}")
-                self.progress_update.emit(f"Connection warning: {str(e)}", 15)
-                # Continue anyway, as Selenium might still work
-            
-            # Set up a headless browser without mobile emulation
+            # Set up a headless browser with fixed dimensions
             chrome_options = Options()
             chrome_options.add_argument("--headless")
             chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--no-sandbox")  # Sometimes helps with connection issues
-            chrome_options.add_argument("--disable-dev-shm-usage")  # Helps with stability
+            chrome_options.add_argument("--no-sandbox")
             
-            # Using desktop view - no mobile emulation
-            # Set a reasonable window size for desktop view
-            chrome_options.add_argument("--window-size=1200,1800")
+            # Set window size to match content plus some margin
+            chrome_options.add_argument("--window-size=600,600")
             
             self.progress_update.emit("Launching browser...", 20)
             driver = webdriver.Chrome(options=chrome_options)
-            
-            # Set an overall page load timeout
-            driver.set_page_load_timeout(20)
             
             self.progress_update.emit(f"Loading page: {self.url}", 30)
             try:
                 driver.get(self.url)
                 print(f"Driver reported page loaded with title: {driver.title}")
-                
-                # Try to get page source to verify content loaded
-                page_source = driver.page_source
-                print(f"Page source length: {len(page_source)} characters")
-                if len(page_source) < 100:
-                    print(f"WARNING: Very short page source: {page_source}")
             except Exception as e:
                 print(f"Page load exception: {str(e)}")
                 self.error.emit(f"Error loading page: {str(e)}")
                 driver.quit()
                 return
             
-            # Wait for page to load with more explicit conditions
-            try:
-                wait = WebDriverWait(driver, 15)
-                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                time.sleep(1)  # Small delay to ensure everything renders
-                print("Page loaded with body element detected")
-            except Exception as e:
-                print(f"Page wait error: {str(e)}")
-                # Continue anyway, we might still get something
+            # Wait for page to load
+            wait = WebDriverWait(driver, 10)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(1)  # Small delay to ensure everything renders
             
             self.progress_update.emit("Page loaded, capturing screenshot...", 70)
             
-            # Take a screenshot of the entire page by getting scroll height
-            # Get total height of page
-            total_height = driver.execute_script("return Math.max( document.body.scrollHeight, document.body.offsetHeight, document.documentElement.clientHeight, document.documentElement.scrollHeight, document.documentElement.offsetHeight );")
-            
-            # Set window height to full page height
-            driver.set_window_size(1200, total_height)
-            time.sleep(0.5)  # Allow resize to complete
-            
-            # Take the full screenshot
+            # Take a simple screenshot - no scaling needed
             fd, temp_path = tempfile.mkstemp(suffix='.png')
             os.close(fd)
             driver.save_screenshot(temp_path)
             
-            # Resize the image to fit in our display area without cropping
-            try:
-                img = Image.open(temp_path)
-                original_width, original_height = img.size
-                
-                # Calculate scaling factor to fit within display dimensions
-                # while preserving aspect ratio
-                scale_factor = min(DISPLAY_WIDTH / original_width, DISPLAY_HEIGHT / original_height)
-                
-                # Calculate new dimensions
-                new_width = int(original_width * scale_factor)
-                new_height = int(original_height * scale_factor)
-                
-                # Resize the image to fit display area
-                resized_img = img.resize((new_width, new_height), Image.LANCZOS)
-                resized_img.save(temp_path)
-                
-                print(f"Full page captured and resized to fit display: {new_width}x{new_height}")
-            except Exception as e:
-                print(f"Error processing image: {str(e)}")
+            # No scaling needed - content is already the right size
+            print(f"Screenshot saved to: {temp_path}")
             
             self.screenshot_path = temp_path
             self.progress_update.emit("Screenshot captured!", 100)
@@ -191,7 +125,7 @@ class WebCaptureThread(QThread):
             
 
 class ActionThread(QThread):
-    """Thread for clicking on elements using normalized coordinates"""
+    """Thread for clicking on elements with visible feedback"""
     progress_update = pyqtSignal(str, int)
     result_ready = pyqtSignal(str, str)
     error = pyqtSignal(str)
@@ -206,29 +140,15 @@ class ActionThread(QThread):
         try:
             self.progress_update.emit("Setting up browser...", 10)
             
-            # First verify the URL is accessible
-            self.progress_update.emit(f"Verifying {self.url}...", 15)
-            try:
-                import urllib.request
-                import socket
-                socket.setdefaulttimeout(5)
-                req = urllib.request.Request(self.url, method='HEAD')
-                with urllib.request.urlopen(req) as response:
-                    print(f"Server response: HTTP {response.getcode()}")
-            except Exception as e:
-                print(f"URL verification warning: {str(e)}")
-            
-            # Set up a Chrome browser with appropriate options
+            # Set up a visible browser (not headless) to show the interaction
             chrome_options = Options()
-            chrome_options.add_argument("--start-maximized")
+            # Make browser visible to see the interaction
+            # chrome_options.add_argument("--start-maximized")
+            chrome_options.add_argument("--window-size=800,800")
             chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
             
             self.progress_update.emit("Launching browser...", 20)
             driver = webdriver.Chrome(options=chrome_options)
-            
-            # Set timeout
-            driver.set_page_load_timeout(20)
             
             # Load the webpage
             self.progress_update.emit(f"Loading page: {self.url}", 30)
@@ -246,6 +166,11 @@ class ActionThread(QThread):
             wait = WebDriverWait(driver, 10)
             wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
             
+            # Take a "before" screenshot
+            before_screenshot = tempfile.mktemp(suffix='.png')
+            driver.save_screenshot(before_screenshot)
+            self.progress_update.emit("Pre-click screenshot captured", 50)
+            
             # Get viewport size
             viewport_width = driver.execute_script("return window.innerWidth")
             viewport_height = driver.execute_script("return window.innerHeight")
@@ -253,51 +178,112 @@ class ActionThread(QThread):
             # Calculate click position in pixels
             if self.coords_type == 'point':
                 x_rel, y_rel = self.coords
-                # Simple point coordinate - convert to pixels directly
                 x_px = int(x_rel * viewport_width)
                 y_px = int(y_rel * viewport_height)
             else:  # bbox
-                # For a bounding box, click in the middle of the box
+                # Click in the middle of the box
                 x_min, y_min, x_max, y_max = self.coords
-                # Calculate the center point of the bounding box
                 x_rel = (x_min + x_max) / 2
                 y_rel = (y_min + y_max) / 2
-                # Convert center to pixels
                 x_px = int(x_rel * viewport_width)
                 y_px = int(y_rel * viewport_height)
                 
                 print(f"Bounding box: ({x_min}, {y_min}, {x_max}, {y_max})")
                 print(f"Clicking on center point: ({x_rel}, {y_rel}) -> {x_px}px, {y_px}px")
             
+            # Highlight the element before clicking (using JavaScript)
+            highlight_script = """
+            var clickPoint = document.elementFromPoint(arguments[0], arguments[1]);
+            if (clickPoint) {
+                // Save original styles
+                var originalOutline = clickPoint.style.outline;
+                var originalBoxShadow = clickPoint.style.boxShadow;
+                
+                // Apply highlight
+                clickPoint.style.outline = '3px solid #FF5722';
+                clickPoint.style.boxShadow = '0 0 10px #FF5722';
+                
+                // Return element info for logging
+                return {
+                    tagName: clickPoint.tagName,
+                    id: clickPoint.id,
+                    className: clickPoint.className,
+                    text: clickPoint.textContent.substring(0, 50)
+                };
+            }
+            return null;
+            """
+            
+            # Try to highlight and get element info
+            element_info = driver.execute_script(highlight_script, x_px, y_px)
+            if element_info:
+                info_text = f"Element: {element_info.get('tagName', 'Unknown')} "
+                if element_info.get('id'):
+                    info_text += f"ID: {element_info['id']} "
+                if element_info.get('className'):
+                    info_text += f"Class: {element_info['className']} "
+                if element_info.get('text'):
+                    info_text += f"Text: {element_info['text']}"
+                    
+                self.progress_update.emit(f"Target: {info_text}", 55)
+            
+            # Take screenshot of highlighted element
+            highlight_screenshot = tempfile.mktemp(suffix='.png')
+            driver.save_screenshot(highlight_screenshot)
+            
+            # Small delay to see the highlight
+            time.sleep(0.5)
+            
             self.progress_update.emit(f"Clicking at coordinates ({x_rel:.3f}, {y_rel:.3f})...", 60)
             
             # Create ActionChains to move and click
             actions = ActionChains(driver)
+            # First move to (0,0) to ensure relative movement works correctly
+            actions.move_to_element(driver.find_element(By.TAG_NAME, "body"))
             actions.move_by_offset(x_px, y_px)
             actions.click()
             actions.perform()
             
-            self.progress_update.emit("Click performed! Waiting for response...", 70)
-            time.sleep(2)  # Wait for any page transitions or reactions to the click
+            self.progress_update.emit("Click performed! Observing changes...", 70)
             
-            # Take a screenshot of new page
-            fd, temp_path = tempfile.mkstemp(suffix='.png')
+            # Wait longer to observe changes
+            time.sleep(2)
+            
+            # Take a screenshot of results
+            fd, result_path = tempfile.mkstemp(suffix='.png')
             os.close(fd)
-            driver.save_screenshot(temp_path)
+            driver.save_screenshot(result_path)
             
-            # Get page title and basic content for summary
+            # Get page title and content for summary
             page_title = driver.title
-            page_content = driver.find_element(By.TAG_NAME, "body").text[:500]  # Get first 500 chars
-            summary = f"Page Title: {page_title}\n\nContent Preview:\n{page_content}..."
+            try:
+                page_content = driver.find_element(By.TAG_NAME, "body").text[:500]
+            except:
+                page_content = "Content could not be extracted"
+                
+            # Create a more detailed summary with before/after comparison
+            summary = f"Page Title: {page_title}\n\n"
+            summary += f"Clicked at: ({x_rel:.3f}, {y_rel:.3f})\n"
+            if element_info:
+                summary += f"Element: {element_info.get('tagName', 'Unknown')}\n"
+                if element_info.get('id') or element_info.get('className'):
+                    summary += f"Identifier: {element_info.get('id', '')} {element_info.get('className', '')}\n"
+            summary += f"\nContent Preview:\n{page_content}..."
             
             self.progress_update.emit("Action completed! Processing results...", 90)
+            
+            # Keep browser open for a bit longer to see the result
+            time.sleep(1)
             
             # Close the browser
             driver.quit()
             
-            self.result_ready.emit(temp_path, summary)
+            # Return the result with the final screenshot
+            self.result_ready.emit(result_path, summary)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error.emit(f"Error performing action: {str(e)}")
 
 
