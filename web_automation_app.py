@@ -1057,7 +1057,7 @@ class WebAutomationApp(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.api_url = "http://127.0.0.1:7860/"
+        self.api_url = "https://002d2d34e0b38b34c9.gradio.live/"
         self.client = None
         self.screenshot_path = None
         
@@ -1185,7 +1185,7 @@ class WebAutomationApp(QMainWindow):
         web_layout.addWidget(web_header)
         
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://example.com")
+        self.url_input.setText("http://localhost:8000")
         web_layout.addWidget(self.url_input)
         
         url_btn_layout = QHBoxLayout()
@@ -1212,7 +1212,8 @@ class WebAutomationApp(QMainWindow):
         prompt_layout.addWidget(self.system_prompt)
         
         prompt_layout.addWidget(QLabel("User Prompt:"))
-        self.user_prompt = QLineEdit("Find the main call-to-action button in this image and give me its coordinates.")
+        # self.user_prompt = QLineEdit("Find the main call-to-action button in this image and give me its coordinates.")
+        self.user_prompt = QLineEdit("Give the bounding box to the leaves")
         self.user_prompt.setFixedHeight(50)  # Reduced from default
         prompt_layout.addWidget(self.user_prompt)
         
