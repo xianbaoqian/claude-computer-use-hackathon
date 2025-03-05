@@ -1,0 +1,67 @@
+# Virtual environment
+magma_env/
+venv/
+ENV/
+env/
+
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Model files and checkpoints (these can be large)
+*.pt
+*.pth
+*.bin
+*.ckpt
+model_cache/
+huggingface/
+transformers_cache/
+
+# Downloaded images
+downloads/
+images/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs and debugging
+*.log
+logs/
+debug/
+pdb_history
+
+# Test files
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Environment variables
+.env
+.env.local
+
+# Local configuration
+config.local.json
+config.json
+
+# Data files
+*.csv
+*.json
+!requirements.json
+*.pkl
+*.db 
