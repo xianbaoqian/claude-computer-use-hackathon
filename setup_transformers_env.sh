@@ -37,6 +37,9 @@ else
     python3 -m pip install gradio matplotlib numpy
 fi
 
+# Add these lines in the dependencies section:
+python3 -m pip install PyQt5 gradio_client
+
 # Print the installed transformers version
 echo "Transformers installed version:"
 python3 -m pip show transformers | grep Version

@@ -54,23 +54,36 @@ def process_image(image_input):
     return image, None
 
 def extract_coordinates(text):
-    """Extract coordinate pattern from text"""
-    pattern = r"Coordinate: \(([0-9.]+), ([0-9.]+), ([0-9.]+), ([0-9.]+)\)"
-    match = re.search(pattern, text)
+    """Extract coordinate pattern from text - handles both formats"""
+    # Try four-value bounding box pattern first
+    pattern_bbox = r"Coordinate: \(([0-9.]+), ([0-9.]+), ([0-9.]+), ([0-9.]+)\)"
+    match = re.search(pattern_bbox, text)
     if match:
         try:
             x_min = float(match.group(1))
             y_min = float(match.group(2))
             x_max = float(match.group(3))
             y_max = float(match.group(4))
-            return x_min, y_min, x_max, y_max
+            return {'type': 'bbox', 'coords': (x_min, y_min, x_max, y_max)}
         except ValueError:
             return None
+    
+    # Try two-value center point pattern
+    pattern_point = r"Coordinate: \(([0-9.]+), ([0-9.]+)\)"
+    match = re.search(pattern_point, text)
+    if match:
+        try:
+            x = float(match.group(1))
+            y = float(match.group(2))
+            return {'type': 'point', 'coords': (x, y)}
+        except ValueError:
+            return None
+            
     return None
 
-def draw_bounding_box(image, coordinates):
-    """Draw a bounding box on an image based on normalized coordinates"""
-    if image is None or coordinates is None:
+def draw_bounding_box(image, coordinates_data):
+    """Draw a bounding box or point marker on an image"""
+    if image is None or coordinates_data is None:
         return None
         
     # Make a copy to avoid modifying the original
@@ -78,20 +91,41 @@ def draw_bounding_box(image, coordinates):
     draw = ImageDraw.Draw(img_copy)
     
     width, height = img_copy.size
-    x_min, y_min, x_max, y_max = coordinates
     
-    # Convert normalized coordinates to pixel coordinates
-    x_min_px = int(x_min * width)
-    y_min_px = int(y_min * height)
-    x_max_px = int(x_max * width)
-    y_max_px = int(y_max * height)
-    
-    # Draw rectangle
-    draw.rectangle(
-        [(x_min_px, y_min_px), (x_max_px, y_max_px)],
-        outline="red",
-        width=3
-    )
+    if coordinates_data['type'] == 'point':
+        # Draw a point marker (circle with cross)
+        x, y = coordinates_data['coords']
+        
+        # Convert normalized coordinates to pixel coordinates
+        center_x = int(x * width)
+        center_y = int(y * height)
+        
+        # Draw a visible point marker
+        radius = max(10, min(width, height) // 30)  # Scale with image size
+        
+        # Draw cross
+        draw.line([(center_x - radius, center_y), (center_x + radius, center_y)], fill="red", width=3)
+        draw.line([(center_x, center_y - radius), (center_x, center_y + radius)], fill="red", width=3)
+        
+        # Draw circle
+        draw.ellipse((center_x - radius, center_y - radius, center_x + radius, center_y + radius), 
+                     outline="red", width=2)
+    else:
+        # Draw rectangle for bounding box
+        x_min, y_min, x_max, y_max = coordinates_data['coords']
+        
+        # Convert normalized coordinates to pixel coordinates
+        x_min_px = int(x_min * width)
+        y_min_px = int(y_min * height)
+        x_max_px = int(x_max * width)
+        y_max_px = int(y_max * height)
+        
+        # Draw rectangle for bounding box
+        draw.rectangle(
+            [(x_min_px, y_min_px), (x_max_px, y_max_px)],
+            outline="red",
+            width=3
+        )
     
     return img_copy
 
@@ -180,12 +214,12 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
     response = processor.decode(generate_ids[0], skip_special_tokens=True).strip()
     
     # Check for coordinates in the response
-    coordinates = extract_coordinates(response)
+    coordinates_data = extract_coordinates(response)
     image_with_box = None
     
-    if coordinates and last_image:
+    if coordinates_data:
         # Draw bounding box on the image
-        image_with_box = draw_bounding_box(last_image, coordinates)
+        image_with_box = draw_bounding_box(last_image, coordinates_data)
     
     # Update chat history - this keeps the image sticky in the UI
     return chat_history + [[user_prompt, response]], image_with_box
