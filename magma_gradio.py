@@ -1,13 +1,16 @@
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from io import BytesIO
 import requests
 import gradio as gr
+import re
+import numpy as np
 from transformers import AutoModelForCausalLM, AutoProcessor
 
 # Global variables to store the model and processor
 global_model = None
 global_processor = None
+last_image = None  # Store the last image for drawing bounding boxes
 
 def load_model():
     """Load the model and processor once and reuse"""
@@ -27,6 +30,8 @@ def load_model():
 
 def process_image(image_input):
     """Process the image input (either uploaded file or URL)"""
+    global last_image
+    
     if isinstance(image_input, str) and image_input.startswith(("http://", "https://")):
         # It's a URL
         try:
@@ -43,11 +48,58 @@ def process_image(image_input):
     if image.mode != "RGB":
         image = image.convert("RGB")
     
+    # Store image for later use with bounding boxes
+    last_image = image.copy()
+    
     return image, None
+
+def extract_coordinates(text):
+    """Extract coordinate pattern from text"""
+    pattern = r"Coordinate: \(([0-9.]+), ([0-9.]+), ([0-9.]+), ([0-9.]+)\)"
+    match = re.search(pattern, text)
+    if match:
+        try:
+            x_min = float(match.group(1))
+            y_min = float(match.group(2))
+            x_max = float(match.group(3))
+            y_max = float(match.group(4))
+            return x_min, y_min, x_max, y_max
+        except ValueError:
+            return None
+    return None
+
+def draw_bounding_box(image, coordinates):
+    """Draw a bounding box on an image based on normalized coordinates"""
+    if image is None or coordinates is None:
+        return None
+        
+    # Make a copy to avoid modifying the original
+    img_copy = image.copy()
+    draw = ImageDraw.Draw(img_copy)
+    
+    width, height = img_copy.size
+    x_min, y_min, x_max, y_max = coordinates
+    
+    # Convert normalized coordinates to pixel coordinates
+    x_min_px = int(x_min * width)
+    y_min_px = int(y_min * height)
+    x_max_px = int(x_max * width)
+    y_max_px = int(y_max * height)
+    
+    # Draw rectangle
+    draw.rectangle(
+        [(x_min_px, y_min_px), (x_max_px, y_max_px)],
+        outline="red",
+        width=3
+    )
+    
+    return img_copy
 
 def generate_response(image_input, system_prompt, user_prompt, chat_history, 
                       max_new_tokens=128, temperature=0.0, do_sample=False, num_beams=1):
     """Generate a response from the model based on image and text inputs"""
+    global last_image
+    
     # Load model if not already loaded
     model, processor = load_model()
     
@@ -59,7 +111,7 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
     if image_input is not None:
         current_image, error = process_image(image_input)
         if error:
-            return chat_history + [[None, error]]
+            return chat_history + [[None, error]], None
     else:
         # No new image provided, check if we have previous messages with an image
         is_new_image = False
@@ -68,7 +120,7 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
             pass
         else:
             # First message but no image
-            return chat_history + [[user_prompt, "Please provide an image to start the conversation."]]
+            return chat_history + [[user_prompt, "Please provide an image to start the conversation."]], None
     
     # Prepare conversation format
     if not chat_history:
@@ -127,12 +179,20 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
     generate_ids = generate_ids[:, inputs["input_ids"].shape[-1]:]
     response = processor.decode(generate_ids[0], skip_special_tokens=True).strip()
     
+    # Check for coordinates in the response
+    coordinates = extract_coordinates(response)
+    image_with_box = None
+    
+    if coordinates and last_image:
+        # Draw bounding box on the image
+        image_with_box = draw_bounding_box(last_image, coordinates)
+    
     # Update chat history - this keeps the image sticky in the UI
-    return chat_history + [[user_prompt, response]]
+    return chat_history + [[user_prompt, response]], image_with_box
 
 def clear_conversation(image):
     """Clear the conversation history but keep the current image"""
-    return [], image  # Return empty chat history but keep the image
+    return [], image, None  # Return empty chat history but keep the image and clear the bbox image
 
 # Define the Gradio interface
 with gr.Blocks() as demo:
@@ -177,7 +237,9 @@ with gr.Blocks() as demo:
         
         with gr.Column(scale=1):
             # Display chat history
-            chatbot = gr.Chatbot(label="Conversation", height=600)
+            chatbot = gr.Chatbot(label="Conversation", height=400)
+            # Display image with bounding box
+            bbox_image = gr.Image(label="Image with Bounding Box", type="pil", visible=True)
     
     # Event handlers
     def use_url_as_image(url):
@@ -198,13 +260,13 @@ with gr.Blocks() as demo:
             image_input, system_prompt, user_prompt, chatbot,
             max_tokens, temperature, do_sample, num_beams
         ],
-        outputs=[chatbot]
+        outputs=[chatbot, bbox_image]
     )
     
     clear_btn.click(
         clear_conversation,
         inputs=[image_input],
-        outputs=[chatbot, image_input]
+        outputs=[chatbot, image_input, bbox_image]
     )
 
 # Launch the demo
@@ -215,5 +277,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: Could not preload model: {e}")
     
-    # Launch Gradio app with live reload for development
+    # Launch Gradio app
     demo.launch(share=True) 
