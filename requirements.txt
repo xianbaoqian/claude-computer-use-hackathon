@@ -14,4 +14,11 @@ matplotlib==3.8.0
 numpy==1.24.3
 
 # Optional utilities
-tqdm==4.66.1 
+tqdm==4.66.1
+
+# New dependencies for the Web Automation Desktop App
+PyQt5>=5.15.0
+selenium>=4.1.0
+Pillow>=9.0.0
+requests>=2.27.1
+gradio-client>=0.2.5 
