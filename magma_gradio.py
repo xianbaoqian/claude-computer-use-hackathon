@@ -51,14 +51,28 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
     # Load model if not already loaded
     model, processor = load_model()
     
-    # Process the image
-    image, error = process_image(image_input)
-    if error:
-        return chat_history + [[None, error]]
+    # Check if this is a new image or if we're continuing with the previous one
+    is_new_image = True
+    current_image = None
+    
+    # Process the image if it's provided
+    if image_input is not None:
+        current_image, error = process_image(image_input)
+        if error:
+            return chat_history + [[None, error]]
+    else:
+        # No new image provided, check if we have previous messages with an image
+        is_new_image = False
+        if len(chat_history) > 0:
+            # Continue with the last conversation
+            pass
+        else:
+            # First message but no image
+            return chat_history + [[user_prompt, "Please provide an image to start the conversation."]]
     
     # Prepare conversation format
     if not chat_history:
-        # First message
+        # First message with a new image
         convs = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"<image_start><image><image_end>\n{user_prompt}"},
@@ -72,14 +86,26 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
             convs.append({"role": "user", "content": user_msg})
             convs.append({"role": "assistant", "content": assistant_msg})
         
-        # Add current user message
-        convs.append({"role": "user", "content": f"<image_start><image><image_end>\n{user_prompt}"})
+        # Add current user message - only include image tags if it's a new image
+        if is_new_image and current_image is not None:
+            convs.append({"role": "user", "content": f"<image_start><image><image_end>\n{user_prompt}"})
+        else:
+            convs.append({"role": "user", "content": user_prompt})
     
     # Process inputs
     prompt = processor.tokenizer.apply_chat_template(convs, tokenize=False, add_generation_prompt=True)
-    inputs = processor(images=image, texts=prompt, return_tensors="pt")
-    inputs['pixel_values'] = inputs['pixel_values'].unsqueeze(0)
-    inputs['image_sizes'] = inputs['image_sizes'].unsqueeze(0)
+    
+    # Only include image in the processing if it's a new image
+    if is_new_image and current_image is not None:
+        inputs = processor(images=current_image, texts=prompt, return_tensors="pt")
+    else:
+        inputs = processor(texts=prompt, return_tensors="pt")
+    
+    # Handle tensor shapes
+    if 'pixel_values' in inputs and inputs['pixel_values'] is not None:
+        inputs['pixel_values'] = inputs['pixel_values'].unsqueeze(0)
+    if 'image_sizes' in inputs and inputs['image_sizes'] is not None:
+        inputs['image_sizes'] = inputs['image_sizes'].unsqueeze(0)
     
     # Send to device
     device = next(model.parameters()).device
@@ -101,13 +127,17 @@ def generate_response(image_input, system_prompt, user_prompt, chat_history,
     generate_ids = generate_ids[:, inputs["input_ids"].shape[-1]:]
     response = processor.decode(generate_ids[0], skip_special_tokens=True).strip()
     
-    # Update chat history
+    # Update chat history - this keeps the image sticky in the UI
     return chat_history + [[user_prompt, response]]
+
+def clear_conversation(image):
+    """Clear the conversation history but keep the current image"""
+    return [], image  # Return empty chat history but keep the image
 
 # Define the Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown("# Magma-8B Interactive Demo")
-    gr.Markdown("Upload an image or provide an image URL and ask questions about it.")
+    gr.Markdown("Upload an image or provide an image URL and ask questions about it. The image will persist until a new one is uploaded.")
     
     with gr.Row():
         with gr.Column(scale=1):
@@ -151,7 +181,14 @@ with gr.Blocks() as demo:
     
     # Event handlers
     def use_url_as_image(url):
-        return url if url.startswith(("http://", "https://")) else None
+        if url and url.startswith(("http://", "https://")):
+            try:
+                # Try to load the image to verify it works
+                Image.open(BytesIO(requests.get(url, stream=True).content))
+                return url
+            except:
+                return None
+        return None
     
     image_url.change(use_url_as_image, image_url, image_input)
     
@@ -164,7 +201,11 @@ with gr.Blocks() as demo:
         outputs=[chatbot]
     )
     
-    clear_btn.click(lambda: [], outputs=[chatbot])
+    clear_btn.click(
+        clear_conversation,
+        inputs=[image_input],
+        outputs=[chatbot, image_input]
+    )
 
 # Launch the demo
 if __name__ == "__main__":
@@ -174,5 +215,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: Could not preload model: {e}")
     
-    # Launch Gradio app
+    # Launch Gradio app with live reload for development
     demo.launch(share=True) 
