@@ -68,3 +68,5 @@ config.json
 !requirements.json
 *.pkl
 *.db 
+
+*.png
